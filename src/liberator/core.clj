@@ -4,7 +4,8 @@
              [Representation as-response ring-response]]
             [liberator.util :refer
              [as-date http-date parse-http-date combine make-function]]
-            [clojure.string :refer [join upper-case]])
+            [clojure.string :refer [join upper-case]]
+            [manifold.deferred :as d])
   (:import (javax.xml.ws ProtocolException)))
 
 (defmulti coll-validator
@@ -73,19 +74,20 @@
 (defn decide [name test then else {:keys [resource request] :as context}]
   (if (or test
          (contains? resource name))
-    (try
-      (let [ftest (or (resource name) test)
-            ftest (make-function ftest)
-            fthen (make-function then)
-            felse (make-function else)
-            decision (ftest context)
-            result (if (vector? decision) (first decision) decision)
-            context-update (if (vector? decision) (second decision) decision)
-            context (update-context context context-update)]
+    (->
+      (d/let-flow [ftest (or (resource name) test)
+                   ftest (make-function ftest)
+                   fthen (make-function then)
+                   felse (make-function else)
+                   decision (ftest context)
+                   result (if (vector? decision) (first decision) decision)
+                   context-update (if (vector? decision) (second decision) decision)
+                   context (update-context context context-update)
+                   retval ((if result fthen felse) context)]
         (log! :decision name decision)
-        ((if result fthen felse) context))
-      (catch Exception e
-        (handle-exception (assoc context :exception e))))
+        retval)
+      (d/catch Exception
+        #(handle-exception (assoc context :exception %))))
     {:status 500 :body (str "No handler found for key \""  name "\"."
                             " Keys defined for resource are " (keys resource))}))
 
@@ -129,56 +131,56 @@
 
 (defn run-handler [name status message
                    {:keys [resource request representation] :as context}]
-  (let [context
-        (merge {:status status :message message} context)
-        response
-        (merge-with
-         combine
+  (d/let-flow [context
+               (merge {:status status :message message} context)
+               handler-output (if-let [handler (get resource (keyword name))]
+                                (handler context)
+                                (get context :message))
 
-         ;; Status
-         {:status status}
-
-         ;; ETags
-         (when-let [etag (gen-etag context)]
-           {:headers {"ETag" etag}})
-
-         ;; Last modified
-         (when-let [last-modified (gen-last-modified context)]
-           {:headers {"Last-Modified" (http-date last-modified)}})
-
-         ;; 201 created required a location header to be send
-         (when (#{201 301 303 307} status)
-           (if-let [f (or (get context :location)
-                          (get resource :location))]
-             {:headers {"Location" (str ((make-function f) context))}}))
-
-
-         (do
-           (log! :handler (keyword name))
-           ;; Content negotiations
-           (merge-with
-            merge
-            {:headers
-             (-> {}
-                 (set-header-maybe "Content-Type"
-                                   (str (:media-type representation)
-                                        (when-let [charset (:charset representation)]
-                                          (str ";charset=" charset))))
-                 (set-header-maybe "Content-Language" (:language representation))
-                 (set-header-maybe "Content-Encoding"
-                                   (let [e (:encoding representation)]
-                                     (if-not (= "identity" e) e)))
-                 (set-header-maybe "Vary" (build-vary-header representation)))}
-            ;; Finally the result of the handler.  We allow the handler to
-            ;; override the status and headers.
+               output-as-response (do
+                                    (log! :handler (keyword name))
+                                    ;; Content negotiations
+                                    (merge-with
+                                      merge
+                                      {:headers
+                                       (-> {}
+                                           (set-header-maybe "Content-Type"
+                                                             (str (:media-type representation)
+                                                                  (when-let [charset (:charset representation)]
+                                                                    (str ";charset=" charset))))
+                                           (set-header-maybe "Content-Language" (:language representation))
+                                           (set-header-maybe "Content-Encoding"
+                                                             (let [e (:encoding representation)]
+                                                               (if-not (= "identity" e) e)))
+                                           (set-header-maybe "Vary" (build-vary-header representation)))}
+                                      ;; Finally the result of the handler.  We allow the handler to
+                                      ;; override the status and headers.
 
 
-            (let [as-response (:as-response resource)]
-              (as-response
-               (if-let [handler (get resource (keyword name))]
-                 (handler context)
-                 (get context :message))
-               context)))))]
+                                      (let [as-response (:as-response resource)]
+                                        (as-response handler-output context))))
+               response
+               (merge-with
+                 combine
+
+                 ;; Status
+                 {:status status}
+
+                 ;; ETags
+                 (when-let [etag (gen-etag context)]
+                   {:headers {"ETag" etag}})
+
+                 ;; Last modified
+                 (when-let [last-modified (gen-last-modified context)]
+                   {:headers {"Last-Modified" (http-date last-modified)}})
+
+                 ;; 201 created required a location header to be send
+                 (when (#{201 301 303 307} status)
+                   (if-let [f (or (get context :location)
+                                  (get resource :location))]
+                     {:headers {"Location" (str ((make-function f) context))}}))
+
+                 output-as-response)]
     (cond
      (or (= :options (:request-method request)) (= 405 (:status response)))
      (merge-with merge

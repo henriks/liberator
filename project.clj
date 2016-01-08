@@ -26,8 +26,9 @@
                                   [midje "1.6.0" :exclusions [org.clojure/clojure]]
                                   ;; only for examples
                                   [compojure "1.0.2" :exclusions [org.clojure/tools.macro]]
-                                  [org.clojure/clojurescript "0.0-1450"]]
-                   :source-paths [ "src" "examples/clj"]}
+                                  ;[org.clojure/clojurescript "0.0-1450"]
+                                  ]
+                   :source-paths ["src" "examples/clj"]}
              :1.4 {:dependencies [[org.clojure/clojure "1.4.0"]]}
              :1.5 {:dependencies [[org.clojure/clojure "1.5.1"]]}
              :1.6 {:dependencies [[org.clojure/clojure "1.6.0-beta1"]]}}
